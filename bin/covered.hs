@@ -4,6 +4,7 @@
 
 module Main (main) where
 
+import Control.Monad (when)
 import Data.Array
 import Data.List
 import Data.Monoid
@@ -23,7 +24,7 @@ import Trace.Hpc.Util
 main :: IO ()
 main = do
   [name] <- getArgs
-  generate name
+  generate False name
 
 index_name, index_fun, index_alt, index_exp :: String
 index_name = "index"
@@ -31,31 +32,34 @@ index_fun  = "definitions"
 index_alt  = "alternatives"
 index_exp  = "expressions"
 
-generate :: String -> IO ()
-generate prog = do
+generate :: Bool -> String -> IO ()
+generate indices prog = do
   mtix <- readTix $ getTixFileName prog
   let Tix tixs = maybe (error $ "unable to find tix file for " ++ prog) id mtix
+  helpers <- mapM helper tixs
+  mapM_ (renderModule True True) helpers
 
-  mods <- mapM (genHtmlFromMod True True) tixs
+  when indices $ do
+    let mods = map summary helpers
+ 
+    writeSummary index_name $ sortBy (\(n1,_,_) (n2,_,_) -> compare n1 n2) mods
+ 
+    writeSummary index_fun $ sortBy (\(_,_,s1) (_,_,s2) ->
+          compare (percent (topFunTicked s2) (topFunTotal s2))
+                  (percent (topFunTicked s1) (topFunTotal s1)))
+          mods
+ 
+    writeSummary index_alt $ sortBy (\(_,_,s1) (_,_,s2) ->
+          compare (percent (altTicked s2) (altTotal s2))
+                  (percent (altTicked s1) (altTotal s1)))
+          mods
+ 
+    writeSummary index_exp $ sortBy (\(_,_,s1) (_,_,s2) ->
+          compare (percent (expTicked s2) (expTotal s2))
+                  (percent (expTicked s1) (expTotal s1)))
+          mods
 
-  writeSummary index_name $ sortBy (\(n1,_,_) (n2,_,_) -> compare n1 n2) mods
-
-  writeSummary index_fun $ sortBy (\(_,_,s1) (_,_,s2) ->
-        compare (percent (topFunTicked s2) (topFunTotal s2))
-                (percent (topFunTicked s1) (topFunTotal s1)))
-        mods
-
-  writeSummary index_alt $ sortBy (\(_,_,s1) (_,_,s2) ->
-        compare (percent (altTicked s2) (altTotal s2))
-                (percent (altTicked s1) (altTotal s1)))
-        mods
-
-  writeSummary index_exp $ sortBy (\(_,_,s1) (_,_,s2) ->
-        compare (percent (expTicked s2) (expTotal s2))
-                (percent (expTicked s1) (expTotal s1)))
-        mods
-
-writeSummary :: [Char] -> [(String, String, ModuleSummary)] -> IO ()
+writeSummary :: String -> [(String, String, ModuleSummary)] -> IO ()
 writeSummary filename mods = do
         putStrLn $ "Generating " ++ filename ++ ".html."
 
@@ -100,42 +104,21 @@ charEncodingTag =
     "<meta http-equiv=\"Content-Type\" " ++
           "content=\"text/html; " ++ "charset=" ++ show localeEncoding ++ "\">"
 
-genHtmlFromMod :: Bool -> Bool -> TixModule -> IO (String, [Char], ModuleSummary)
-genHtmlFromMod anchor number tix = do
-  let modName0 = tixModuleName tix
-
-  (Mix origFile _ _ tabStop mix') <- readMix [".hpc"] (Right tix)
-
+helper tix = do
+  let moduleName = tixModuleName tix
+      moduleTixs = tixModuleTixs tix
+      fileName = moduleName ++ ".hs.html"
+  mix <- readMix [".hpc"] (Right tix)
   let arr_tix :: Array Int Integer
-      arr_tix = listArray (0,length (tixModuleTixs tix) - 1)
-              $ tixModuleTixs tix
+      arr_tix = listArray (0, length moduleTixs - 1) moduleTixs
+  return (moduleName, fileName, mix, arr_tix)
 
-  let tickedWith :: Int -> Integer
+summary (moduleName, fileName, mix, arr_tix) =
+  let (Mix _ _ _ _ mix') = mix
       tickedWith n = arr_tix ! n
-
       isTicked n = tickedWith n /= 0
 
-  let info = [ (pos,theMarkup)
-             | (gid,(pos,boxLabel)) <- zip [0 ..] mix'
-             , let binBox = case (isTicked gid,isTicked (gid+1)) of
-                               (False,False) -> []
-                               (True,False)  -> [TickedOnlyTrue]
-                               (False,True)  -> [TickedOnlyFalse]
-                               (True,True)   -> []
-             , let tickBox = if isTicked gid
-                             then [IsTicked]
-                             else [NotTicked]
-             , theMarkup <- case boxLabel of
-                                  ExpBox {} -> tickBox
-                                  TopLevelBox {}
-                                            -> TopLevelDecl False (tickedWith gid) : tickBox
-                                  LocalBox {}   -> tickBox
-                                  BinBox _ True -> binBox
-                                  _             -> []
-             ]
-
-
-  let modSummary = foldr (.) id
+      modSummary = foldr (.) id
              [ \ st ->
                case boxLabel of
                  ExpBox False
@@ -159,18 +142,40 @@ genHtmlFromMod anchor number tix = do
                             else id
              ] $ mempty
 
+  in modSummary `seq` (moduleName, fileName, modSummary)
+
+renderModule anchor number (_, fileName, mix, arr_tix) = do
+  let (Mix origFile _ _ tabStop mix') = mix
+      tickedWith n = arr_tix ! n
+      isTicked n = tickedWith n /= 0
+
+      info = [ (pos,theMarkup)
+             | (gid,(pos,boxLabel)) <- zip [0 ..] mix'
+             , let binBox = case (isTicked gid,isTicked (gid+1)) of
+                               (False,False) -> []
+                               (True,False)  -> [TickedOnlyTrue]
+                               (False,True)  -> [TickedOnlyFalse]
+                               (True,True)   -> []
+             , let tickBox = if isTicked gid
+                             then [IsTicked]
+                             else [NotTicked]
+             , theMarkup <- case boxLabel of
+                                  ExpBox {} -> tickBox
+                                  TopLevelBox {}
+                                            -> TopLevelDecl False (tickedWith gid) : tickBox
+                                  LocalBox {}   -> tickBox
+                                  BinBox _ True -> binBox
+                                  _             -> []
+             ]
+
   -- add prefix to modName argument
   content <- readFile origFile
 
-  let fileName = modName0 ++ ".hs.html"
   putStrLn $ "Generating " ++ fileName ++ "."
   writeFile fileName $
     let f = if anchor then insertAnchors' else map (uncurry Token)
         content' = markup tabStop info $ f $ tokenise content
     in htmlHeader "TODO" ++ hscolour' defaultColourPrefs anchor number content' ++ htmlClose
-
-
-  modSummary `seq` return (modName0,fileName,modSummary)
 
 data Loc = Loc !Int !Int
          deriving (Eq,Ord,Show)
@@ -321,7 +326,7 @@ data ModuleSummary = ModuleSummary
 
 
 showModuleSummary :: (String, String, ModuleSummary) -> String
-showModuleSummary (modName,fileName,modSummary) =
+showModuleSummary (modName, fileName, modSummary) =
   "<tr>\n" ++
   "<td>&nbsp;&nbsp;<tt>module <a href=\"" ++ fileName ++ "\">"
                               ++ modName ++ "</a></tt></td>\n" ++
