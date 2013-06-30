@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE RecordWildCards #-}
 -- Markup Haskell source with program coverage and syntax highlighting.
 -- Based on hpc-markup (BSD), Andy Gill and Colin Runciman, June 2006.
 -- Based on hscolour (GPL).
@@ -11,7 +13,11 @@ import Data.Monoid
 import Language.Haskell.HsColour.Anchors
 import Language.Haskell.HsColour.Classify
 import Language.Haskell.HsColour.HTML
-import System.Environment (getArgs)
+import Data.Version (showVersion)
+import Paths_covered (version)
+import System.Console.CmdArgs.Implicit
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>), (<.>), splitFileName, takeDirectory)
 import System.IO (localeEncoding)
 import Trace.Hpc.Mix
 import Trace.Hpc.Tix
@@ -20,9 +26,60 @@ import Trace.Hpc.Util
 ------------------------------------------------------------------------------
 
 main :: IO ()
-main = do
-  [name] <- getArgs
-  generate False name
+main = (runCmd =<<) . cmdArgs $ modes
+  [ cmdMarkup
+  , cmdDummy
+  ]
+  &= summary versionString
+  &= program "covered"
+
+-- | String with the program name, version and copyright.
+versionString :: String
+versionString =
+  "Covered " ++ showVersion version ++ " - Copyright (c) 2013 Vo Minh Thu.\n"
+  ++ "Contains code from hpc-markup and hscolour."
+
+-- | Data type representing the different command-line subcommands.
+data Cmd =
+    CmdMarkup
+    { cmdProgramName :: String
+    , cmdHpcDir :: String
+    , cmdDestDir :: String
+    }
+  | CmdDummy
+  deriving (Data, Typeable)
+
+-- | Create a 'Markup' command.
+cmdMarkup :: Cmd
+cmdMarkup = CmdMarkup
+  { cmdProgramName = def
+    &= argPos 0
+    &= typ "PROGRAM"
+  , cmdHpcDir = ".hpc"
+    &= explicit
+    &= name "hpcdir"
+    &= help "Directory containing the MIX files."
+  , cmdDestDir = "dist/hpc/html"
+    &= explicit
+    &= name "destdir"
+    &= help "Directory where the HTML will be generated."
+  } &= help "Generate HTML documents."
+    &= explicit
+    &= name "markup"
+
+-- | Create a 'Dummy' command.
+cmdDummy :: Cmd
+cmdDummy = CmdDummy
+    &= help "Dummy command to have more than one command."
+    &= explicit
+    &= name "dummy"
+
+runCmd :: Cmd -> IO ()
+runCmd CmdMarkup{..} = generate False cmdProgramName cmdHpcDir cmdDestDir
+
+runCmd CmdDummy{..} = putStrLn "Dummy."
+
+------------------------------------------------------------------------------
 
 index_name, index_fun, index_alt, index_exp :: String
 index_name = "index"
@@ -30,34 +87,34 @@ index_fun  = "definitions"
 index_alt  = "alternatives"
 index_exp  = "expressions"
 
-generate :: Bool -> String -> IO ()
-generate indices prog = do
+generate :: Bool -> String -> String -> String -> IO ()
+generate indices prog hpcdir destdir = do
   mtix <- readTix $ getTixFileName prog
   let Tix tixs = maybe (error $ "unable to find tix file for " ++ prog) id mtix
-  helpers <- mapM helper tixs
-  mapM_ (renderModule True True) helpers
+  helpers <- mapM (helper hpcdir) tixs
+  mapM_ (renderModule destdir True True) helpers
 
   when indices $ do
-    let mods = map summary helpers
+    let mods = map makeSummary helpers
  
-    writeSummary index_name $ sortBy (\(n1,_,_) (n2,_,_) -> compare n1 n2) mods
+    writeSummary index_name $ sortBy (\(n1, _) (n2, _) -> compare n1 n2) mods
  
-    writeSummary index_fun $ sortBy (\(_,_,s1) (_,_,s2) ->
+    writeSummary index_fun $ sortBy (\(_, s1) (_, s2) ->
           compare (percent (topFunTicked s2) (topFunTotal s2))
                   (percent (topFunTicked s1) (topFunTotal s1)))
           mods
  
-    writeSummary index_alt $ sortBy (\(_,_,s1) (_,_,s2) ->
+    writeSummary index_alt $ sortBy (\(_, s1) (_, s2) ->
           compare (percent (altTicked s2) (altTotal s2))
                   (percent (altTicked s1) (altTotal s1)))
           mods
  
-    writeSummary index_exp $ sortBy (\(_,_,s1) (_,_,s2) ->
+    writeSummary index_exp $ sortBy (\(_, s1) (_, s2) ->
           compare (percent (expTicked s2) (expTotal s2))
                   (percent (expTicked s1) (expTotal s1)))
           mods
 
-writeSummary :: String -> [(String, String, ModuleSummary)] -> IO ()
+writeSummary :: String -> [(String, ModuleSummary)] -> IO ()
 writeSummary filename mods = do
         putStrLn $ "Generating " ++ filename ++ ".html."
 
@@ -93,7 +150,7 @@ writeSummary filename mods = do
             concatMap showModuleSummary mods ++
             "<tr></tr>" ++
             showTotalSummary
-              (mconcat [ modSummary | (_,_,modSummary) <- mods ]) ++
+              (mconcat [ modSummary | (_, modSummary) <- mods ]) ++
             "</table></body></html>\n"
 
 
@@ -102,17 +159,16 @@ charEncodingTag =
     "<meta http-equiv=\"Content-Type\" " ++
           "content=\"text/html; " ++ "charset=" ++ show localeEncoding ++ "\">"
 
-helper :: TixModule -> IO (String, String, Mix, Array Int Integer)
-helper tix = do
+helper :: String -> TixModule -> IO (String, Mix, Array Int Integer)
+helper hpcdir tix = do
   let moduleName = tixModuleName tix
       moduleTixs = tixModuleTixs tix
-      fileName = moduleName ++ ".hs.html"
-  mix <- readMix [".hpc"] (Right tix)
+  mix <- readMix [hpcdir] (Right tix)
   let arr_tix :: Array Int Integer
       arr_tix = listArray (0, length moduleTixs - 1) moduleTixs
-  return (moduleName, fileName, mix, arr_tix)
+  return (moduleName, mix, arr_tix)
 
-summary (moduleName, fileName, mix, arr_tix) =
+makeSummary (moduleName, mix, arr_tix) =
   let (Mix _ _ _ _ mix') = mix
       tickedWith n = arr_tix ! n
       isTicked n = tickedWith n /= 0
@@ -141,9 +197,9 @@ summary (moduleName, fileName, mix, arr_tix) =
                             else id
              ] $ mempty
 
-  in modSummary `seq` (moduleName, fileName, modSummary)
+  in modSummary `seq` (moduleName, modSummary)
 
-renderModule anchor number (moduleName, fileName, mix, arr_tix) = do
+renderModule destdir anchor number (moduleName, mix, arr_tix) = do
   let (Mix origFile _ _ tabStop mix') = mix
       tickedWith n = arr_tix ! n
       isTicked n = tickedWith n /= 0
@@ -170,8 +226,11 @@ renderModule anchor number (moduleName, fileName, mix, arr_tix) = do
   -- add prefix to modName argument
   content <- readFile origFile
 
-  putStrLn $ "Generating " ++ fileName ++ "."
-  writeFile fileName $
+  let (d, f) = splitFileName moduleName
+      f' = map (\c -> if c == '.' then '/' else c) f
+  putStrLn $ "Generating " ++ destdir </> d </> f' ++ ".hs."
+  createDirectoryIfMissing True (destdir </> d </> takeDirectory f')
+  writeFile (destdir </> d </> f' <.> "hs") $
     let f = if anchor then insertAnchors' else map (uncurry Token)
         content' = markup tabStop info $ f $ tokenise content
     in htmlHeader moduleName ++ hscolour' number content' ++ htmlClose
@@ -301,10 +360,10 @@ data ModuleSummary = ModuleSummary
      deriving (Show)
 
 
-showModuleSummary :: (String, String, ModuleSummary) -> String
-showModuleSummary (modName, fileName, modSummary) =
+showModuleSummary :: (String, ModuleSummary) -> String
+showModuleSummary (modName, modSummary) =
   "<tr>\n" ++
-  "<td>&nbsp;&nbsp;<tt>module <a href=\"" ++ fileName ++ "\">"
+  "<td>&nbsp;&nbsp;<tt>module <a href=\"" ++ "TODO/filename" ++ "\">"
                               ++ modName ++ "</a></tt></td>\n" ++
    showSummary (topFunTicked modSummary) (topFunTotal modSummary) ++
    showSummary (altTicked modSummary) (altTotal modSummary) ++
@@ -450,10 +509,10 @@ htmlHeader title = unlines
   , "<!-- Generated by Covered, https://github.com/noteed/covered -->"
   , "<title>" ++ title ++ "</title>"
   , "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
-  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"css/bootstrap.min.css\">"
-  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"css/font-awesome.min.css\">"
-  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"css/style.css\">"
-  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"css/bootstrap-responsive.min.css\">"
+  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"/css/bootstrap.min.css\">"
+  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"/css/font-awesome.min.css\">"
+  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"/css/style.css\">"
+  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"/css/bootstrap-responsive.min.css\">"
   , "</head>"
   , "<body>"
   ]
