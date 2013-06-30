@@ -8,6 +8,7 @@ import Data.Array
 import Data.List
 import Data.Maybe (fromJust)
 import Data.Monoid
+import Language.Haskell.HsColour.Anchors
 import Language.Haskell.HsColour.Classify
 import Language.Haskell.HsColour.Colourise
 import Language.Haskell.HsColour.HTML
@@ -189,8 +190,8 @@ genHtmlFromMod tix = do
     hscolour defaultColourPrefs True content
 
   writeFile (modName0 ++ ".hscovered.html") $
-    let content'' = markup' tabStop info $ tokenise content
-    in htmlHeader "TODO" ++ hscolour' defaultColourPrefs False content'' ++ htmlClose
+    let content'' = markup' tabStop info $ insertAnchors' $ tokenise content
+    in htmlHeader "TODO" ++ hscolour' defaultColourPrefs True content'' ++ htmlClose
 
 
   modSummary `seq` return (modName0,fileName,modSummary)
@@ -210,18 +211,24 @@ data Markup
 
 type TokenType' = Either TokenType (Maybe Markup)
 
+data Token =
+    Token TokenType String
+  | Coverage (Maybe Markup)
+  | Anchor String
+  deriving (Eq,Show)
+
 markup' :: Int                  -- ^ tab size
        -> [(HpcPos, Markup)]    -- ^ random list of tick location pairs
-       -> [(TokenType, String)] -- ^ hscolour text to mark up
-       -> [(TokenType', String)]
+       -> [Token]               -- ^ hscolour text (tokenized, and maybe with anchors) to mark up
+       -> [Token]
 markup' tabStop mix tokens = addMarkup' tabStop tokens (Loc 1 1) [] $ sortTicks mix
 
 addMarkup' :: Int                   -- tabStop
-           -> [(TokenType, String)] -- text to mark up
+           -> [Token]               -- text to mark up
            -> Loc                   -- current location
            -> [(Loc, Markup)]       -- stack of open ticks, with closing location
            -> [(Loc, Loc, Markup)]  -- sorted list of tick location pairs
-           -> [(TokenType', String)]
+           -> [Token]
 
 addMarkup' _ [] _loc os [] = map (const closeTick') os
 addMarkup' tabStop cs loc ((o, _):os) ticks | loc > o =
@@ -244,28 +251,29 @@ addMarkup' tabStop0 cs loc os ((t1, _t2, _tik):ticks) | loc > t1 =
   -- throw away this tick, because it is from a previous place ??
   addMarkup' tabStop0 cs loc os ticks
 
-addMarkup' tabStop0 ((Space, "\n"):cs) loc@(Loc ln col) os@((Loc ln2 col2,_):_) ticks
+addMarkup' tabStop0 (Token Space "\n":cs) loc@(Loc ln col) os@((Loc ln2 col2,_):_) ticks
   | ln == ln2 && col < col2
-  = addMarkup' tabStop0 ((Space, " "):(Space, "\n"):cs) loc os ticks
+  = addMarkup' tabStop0 (Token Space " ":Token Space "\n":cs) loc os ticks
 
 addMarkup' tabStop0 (c0:cs) loc@(Loc _ _) os ticks =
-  if c0==(Space, "\n") && os /= []
+  if c0 == Token Space "\n" && os /= []
   then
     map (const closeTick') (downToTopLevel os) ++
-    [(Left Space, "\n")] ++
+    [c0] ++
     map (openTick' . snd) (reverse (downToTopLevel os)) ++
     addMarkup' tabStop0 cs loc' os ticks
   else
-    let (a, b) = c0 in (Left a, b) : addMarkup' tabStop0 cs loc' os ticks
+    c0 : addMarkup' tabStop0 cs loc' os ticks
   where
   loc' = incBy c0 loc
 
-  incBy :: (TokenType, String) -> Loc -> Loc
-  incBy (_, "\n") (Loc ln _c) = Loc (ln + 1) 1
+  incBy :: Token -> Loc -> Loc
+  incBy (Token _ "\n") (Loc ln _c) = Loc (ln + 1) 1
   -- TODO s can contain tabs.
-  incBy (_, s) (Loc ln c) = Loc ln (c + length s)
+  incBy (Token _ s) (Loc ln c) = Loc ln (c + length s)
+  incBy _ lc = lc
 
-addMarkup' tabStop cs loc os ticks = [(Left String, "ERROR: " ++ show (take 10 cs,tabStop,loc,take 10 os,take 10 ticks))]
+addMarkup' tabStop cs loc os ticks = [Token String $ "ERROR: " ++ show (take 10 cs,tabStop,loc,take 10 os,take 10 ticks)]
 
 
 markup :: Int                -- ^tabStop
@@ -387,11 +395,11 @@ openTick (TopLevelDecl True n0)
 closeTick :: String
 closeTick = "</span>"
 
-openTick' :: Markup -> (TokenType', String)
-openTick' m = (Right (Just m), "")
+openTick' :: Markup -> Token
+openTick' = Coverage . Just
 
-closeTick' :: (TokenType', String)
-closeTick' = (Right Nothing, "")
+closeTick' :: Token
+closeTick' = Coverage Nothing
 
 openTopDecl :: String
 openTopDecl = "<span class=\"decl\">"
@@ -492,20 +500,27 @@ yellow = "yellow"
 -- From hscolour, which is under GPL.
 
 -- | Formats Haskell source code using HTML with font tags.
-hscolour' :: ColourPrefs           -- ^ Colour preferences.
-         -> Bool                   -- ^ Whether to include anchors TODO
-         -> [(TokenType', String)] -- ^ Haskell source code.
-         -> String                 -- ^ Coloured Haskell source code.
-hscolour' pref _ = pre . concatMap (renderToken pref)
+hscolour' :: ColourPrefs -- ^ Colour preferences.
+         -> Bool         -- ^ Whether to include anchors.
+         -> [Token]      -- ^ Haskell source code.
+         -> String       -- ^ Coloured Haskell source code.
+hscolour' pref anchor = pre
+  . (if anchor then renderNewLinesAnchors else id)
+  . concatMap (renderToken pref)
+
+insertAnchors' = map f. insertAnchors
+  where f (Left s) = Anchor s
+        f (Right (a, b)) = Token a b
 
 pre :: String -> String
 pre = ("<pre>"++) . (++"</pre>")
 
-renderToken :: ColourPrefs -> (TokenType', String) -> String
-renderToken _ (Right Nothing, _) = closeTick
-renderToken _ (Right (Just m), _) = openTick m
-renderToken pref (Left t, s) = fontify (colourise pref t)
+renderToken :: ColourPrefs -> Token -> String
+renderToken _ (Coverage Nothing) = closeTick
+renderToken _ (Coverage (Just m)) = openTick m
+renderToken pref (Token t s) = fontify (colourise pref t)
   (if t == Comment then renderComment s else escape s)
+renderToken pref (Anchor s) = "<a name=\"" ++ s ++ "\"></a>"
 
 -- Html stuff
 fontify ::  [Highlight] -> String -> String
