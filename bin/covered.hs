@@ -6,7 +6,6 @@ module Main (main) where
 
 import Data.Array
 import Data.List
-import Data.Maybe (fromJust)
 import Data.Monoid
 import Language.Haskell.HsColour.Anchors
 import Language.Haskell.HsColour.Classify
@@ -37,7 +36,7 @@ generate prog = do
   mtix <- readTix $ getTixFileName prog
   let Tix tixs = maybe (error $ "unable to find tix file for " ++ prog) id mtix
 
-  mods <- mapM genHtmlFromMod tixs
+  mods <- mapM (genHtmlFromMod True True) tixs
 
   writeSummary index_name $ sortBy (\(n1,_,_) (n2,_,_) -> compare n1 n2) mods
 
@@ -101,8 +100,8 @@ charEncodingTag =
     "<meta http-equiv=\"Content-Type\" " ++
           "content=\"text/html; " ++ "charset=" ++ show localeEncoding ++ "\">"
 
-genHtmlFromMod :: TixModule -> IO (String, [Char], ModuleSummary)
-genHtmlFromMod tix = do
+genHtmlFromMod :: Bool -> Bool -> TixModule -> IO (String, [Char], ModuleSummary)
+genHtmlFromMod anchor number tix = do
   let modName0 = tixModuleName tix
 
   (Mix origFile _ _ tabStop mix') <- readMix [".hpc"] (Right tix)
@@ -163,35 +162,12 @@ genHtmlFromMod tix = do
   -- add prefix to modName argument
   content <- readFile origFile
 
-  let content' = markup tabStop info content
-  let show' = reverse . take 5 . (++ "       ") . reverse . show
-  let addLine n xs = "<span class=\"lineno\">" ++ show' n ++ " </span>" ++ xs
-  let addLines = unlines . map (uncurry addLine) . zip [1 :: Int ..] . lines
   let fileName = modName0 ++ ".hs.html"
   putStrLn $ "Generating " ++ fileName ++ "."
   writeFile fileName $
-            unlines ["<html>",
-                     "<head>",
-                     charEncodingTag,
-                     "<style type=\"text/css\">",
-                     "span.lineno { color: white; background: #aaaaaa; border-right: solid white 12px }",
-                     "span.nottickedoff { background: " ++ yellow ++ "}",
-                     "span.istickedoff { background: white }",
-                     "span.tickonlyfalse { margin: -1px; border: 1px solid " ++ red ++ "; background: " ++ red ++ " }",
-                     "span.tickonlytrue  { margin: -1px; border: 1px solid " ++ green ++ "; background: " ++ green ++ " }",
-                     "span.funcount { font-size: small; color: orange; z-index: 2; position: absolute; right: 20 }",
-                     "span.decl { font-weight: bold }",
-                     "span.spaces    { background: white }",
-                     "</style>",
-                     "</head>",
-                     "<body>",
-                     "<pre>"] ++ addLines content' ++ "\n</pre>\n</body>\n</html>\n";
-  writeFile (modName0 ++ ".hscolour.html") $
-    hscolour defaultColourPrefs True content
-
-  writeFile (modName0 ++ ".hscovered.html") $
-    let content'' = markup' tabStop info $ insertAnchors' $ tokenise content
-    in htmlHeader "TODO" ++ hscolour' defaultColourPrefs True content'' ++ htmlClose
+    let f = if anchor then insertAnchors' else map (uncurry Token)
+        content' = markup tabStop info $ f $ tokenise content
+    in htmlHeader "TODO" ++ hscolour' defaultColourPrefs anchor number content' ++ htmlClose
 
 
   modSummary `seq` return (modName0,fileName,modSummary)
@@ -209,37 +185,35 @@ data Markup
            Integer
      deriving (Eq,Show)
 
-type TokenType' = Either TokenType (Maybe Markup)
-
 data Token =
     Token TokenType String
   | Coverage (Maybe Markup)
   | Anchor String
   deriving (Eq,Show)
 
-markup' :: Int                  -- ^ tab size
+markup :: Int                  -- ^ tab size
        -> [(HpcPos, Markup)]    -- ^ random list of tick location pairs
        -> [Token]               -- ^ hscolour text (tokenized, and maybe with anchors) to mark up
        -> [Token]
-markup' tabStop mix tokens = addMarkup' tabStop tokens (Loc 1 1) [] $ sortTicks mix
+markup tabStop mix tokens = addMarkup tabStop tokens (Loc 1 1) [] $ sortTicks mix
 
-addMarkup' :: Int                   -- tabStop
+addMarkup :: Int                   -- tabStop
            -> [Token]               -- text to mark up
            -> Loc                   -- current location
            -> [(Loc, Markup)]       -- stack of open ticks, with closing location
            -> [(Loc, Loc, Markup)]  -- sorted list of tick location pairs
            -> [Token]
 
-addMarkup' _ [] _loc os [] = map (const closeTick') os
-addMarkup' tabStop cs loc ((o, _):os) ticks | loc > o =
-  closeTick' : addMarkup' tabStop cs loc os ticks
+addMarkup _ [] _loc os [] = map (const closeTick') os
+addMarkup tabStop cs loc ((o, _):os) ticks | loc > o =
+  closeTick' : addMarkup tabStop cs loc os ticks
 
-addMarkup' tabStop cs loc os ((t1, t2, tik0):ticks) | loc == t1 =
+addMarkup tabStop cs loc os ((t1, t2, tik0):ticks) | loc == t1 =
   case os of
   ((_, tik'):_)
     | not (allowNesting tik0 tik')
-    -> addMarkup' tabStop cs loc os ticks -- already marked or bool within marked bool
-  _ -> openTick' tik0 : addMarkup' tabStop cs loc (addTo (t2, tik0) os) ticks
+    -> addMarkup tabStop cs loc os ticks -- already marked or bool within marked bool
+  _ -> openTick' tik0 : addMarkup tabStop cs loc (addTo (t2, tik0) os) ticks
 
  where
 
@@ -247,23 +221,23 @@ addMarkup' tabStop cs loc os ((t1, t2, tik0):ticks) | loc == t1 =
   addTo (t,tik) ((t',tik'):xs) | t <= t'   = (t,tik):(t',tik'):xs
                                | otherwise = (t',tik):(t',tik'):xs
 
-addMarkup' tabStop0 cs loc os ((t1, _t2, _tik):ticks) | loc > t1 =
+addMarkup tabStop0 cs loc os ((t1, _t2, _tik):ticks) | loc > t1 =
   -- throw away this tick, because it is from a previous place ??
-  addMarkup' tabStop0 cs loc os ticks
+  addMarkup tabStop0 cs loc os ticks
 
-addMarkup' tabStop0 (Token Space "\n":cs) loc@(Loc ln col) os@((Loc ln2 col2,_):_) ticks
+addMarkup tabStop0 (Token Space "\n":cs) loc@(Loc ln col) os@((Loc ln2 col2,_):_) ticks
   | ln == ln2 && col < col2
-  = addMarkup' tabStop0 (Token Space " ":Token Space "\n":cs) loc os ticks
+  = addMarkup tabStop0 (Token Space " ":Token Space "\n":cs) loc os ticks
 
-addMarkup' tabStop0 (c0:cs) loc@(Loc _ _) os ticks =
+addMarkup tabStop0 (c0:cs) loc@(Loc _ _) os ticks =
   if c0 == Token Space "\n" && os /= []
   then
     map (const closeTick') (downToTopLevel os) ++
     [c0] ++
     map (openTick' . snd) (reverse (downToTopLevel os)) ++
-    addMarkup' tabStop0 cs loc' os ticks
+    addMarkup tabStop0 cs loc' os ticks
   else
-    c0 : addMarkup' tabStop0 cs loc' os ticks
+    c0 : addMarkup tabStop0 cs loc' os ticks
   where
   loc' = incBy c0 loc
 
@@ -273,14 +247,7 @@ addMarkup' tabStop0 (c0:cs) loc@(Loc _ _) os ticks =
   incBy (Token _ s) (Loc ln c) = Loc ln (c + length s)
   incBy _ lc = lc
 
-addMarkup' tabStop cs loc os ticks = [Token String $ "ERROR: " ++ show (take 10 cs,tabStop,loc,take 10 os,take 10 ticks)]
-
-
-markup :: Int                -- ^tabStop
-       -> [(HpcPos, Markup)] -- random list of tick location pairs
-       -> String             -- text to mark up
-       -> String
-markup tabStop mix str = addMarkup tabStop str (Loc 1 1) [] $ sortTicks mix
+addMarkup tabStop cs loc os ticks = [Token String $ "ERROR: " ++ show (take 10 cs,tabStop,loc,take 10 os,take 10 ticks)]
 
 sortTicks :: [(HpcPos, Markup)] -> [(Loc, Loc, Markup)]
 sortTicks mix = sortBy
@@ -291,86 +258,6 @@ sortTicks mix = sortBy
                 | (pos, mark) <- mix
                 , let (ln1, c1, ln2, c2) = fromHpcPos pos
                 ]
-
-addMarkup :: Int                -- tabStop
-          -> String             -- text to mark up
-          -> Loc                -- current location
-          -> [(Loc,Markup)]     -- stack of open ticks, with closing location
-          -> [(Loc,Loc,Markup)] -- sorted list of tick location pairs
-          -> String
-
--- check the pre-condition.
---addMarkup tabStop cs loc os ticks
---   | not (isSorted (map fst os)) = error $ "addMarkup: bad closing ordering: " ++ show os
-
---addMarkup tabStop cs loc os@(_:_) ticks
---   | trace (show (loc,os,take 10 ticks)) False = undefined
-
--- close all open ticks, if we have reached the end
-addMarkup _ [] _loc os [] =
-  concatMap (const closeTick) os
-addMarkup tabStop cs loc ((o,_):os) ticks | loc > o =
-  closeTick ++ addMarkup tabStop cs loc os ticks
-
---addMarkup tabStop cs loc os ((t1,t2,tik@(TopLevelDecl {})):ticks) | loc == t1 =
---   openTick tik ++ closeTick ++ addMarkup tabStop cs loc os ticks
-
-addMarkup tabStop cs loc os ((t1,t2,tik0):ticks) | loc == t1 =
-  case os of
-  ((_,tik'):_)
-    | not (allowNesting tik0 tik')
-    -> addMarkup tabStop cs loc os ticks -- already marked or bool within marked bool
-  _ -> openTick tik0 ++ addMarkup tabStop cs loc (addTo (t2,tik0) os) ticks
- where
-
-  addTo (t,tik) []             = [(t,tik)]
-  addTo (t,tik) ((t',tik'):xs) | t <= t'   = (t,tik):(t',tik'):xs
-                               | otherwise = (t',tik):(t',tik'):xs
-
-addMarkup tabStop0 cs loc os ((t1,_t2,_tik):ticks) | loc > t1 =
-          -- throw away this tick, because it is from a previous place ??
-          addMarkup tabStop0 cs loc os ticks
-
-addMarkup tabStop0 ('\n':cs) loc@(Loc ln col) os@((Loc ln2 col2,_):_) ticks
-          | ln == ln2 && col < col2
-          = addMarkup tabStop0 (' ':'\n':cs) loc os ticks
-addMarkup tabStop0 (c0:cs) loc@(Loc _ p) os ticks =
-  if c0=='\n' && os/=[] then
-    concatMap (const closeTick) (downToTopLevel os) ++
-    c0 : "<span class=\"spaces\">" ++ expand 1 w ++ "</span>" ++
-    concatMap (openTick.snd) (reverse (downToTopLevel os)) ++
-    addMarkup tabStop0 cs' loc' os ticks
-  else if c0=='\t' then
-    expand p "\t" ++ addMarkup tabStop0 cs (incBy c0 loc) os ticks
-  else
-    escape c0 ++ addMarkup tabStop0 cs (incBy c0 loc) os ticks
-  where
-  (w,cs') = span (`elem` " \t") cs
-  loc' = foldl (flip incBy) loc (c0:w)
-  escape '>' = "&gt;"
-  escape '<' = "&lt;"
-  escape '"' = "&quot;"
-  escape '&' = "&amp;"
-  escape c  = [c]
-
-  expand :: Int -> String -> String
-  expand _ ""       = ""
-  expand c ('\t':s) = replicate (c' - c) ' ' ++ expand c' s
-    where
-    c' = tabStopAfter 8 c
-  expand c (' ':s)  = ' ' : expand (c+1) s
-  expand _ _        = error "bad character in string for expansion"
-
-  incBy :: Char -> Loc -> Loc
-  incBy '\n' (Loc ln _c) = Loc (succ ln) 1
-  incBy '\t' (Loc ln c) = Loc ln (tabStopAfter tabStop0 c)
-  incBy _    (Loc ln c) = Loc ln (succ c)
-
-  tabStopAfter :: Int -> Int -> Int
-  tabStopAfter tabStop c = fromJust (find (>c) [1,(tabStop + 1)..])
-
-
-addMarkup tabStop cs loc os ticks = "ERROR: " ++ show (take 10 cs,tabStop,loc,take 10 os,take 10 ticks)
 
 openTick :: Markup -> String
 openTick NotTicked       = "<span class=\"nottickedoff\">"
@@ -502,15 +389,25 @@ yellow = "yellow"
 -- | Formats Haskell source code using HTML with font tags.
 hscolour' :: ColourPrefs -- ^ Colour preferences.
          -> Bool         -- ^ Whether to include anchors.
+         -> Bool         -- ^ Whether to number lines.
          -> [Token]      -- ^ Haskell source code.
          -> String       -- ^ Coloured Haskell source code.
-hscolour' pref anchor = pre
+hscolour' pref anchor number = pre
+  . (if number then addLines else id)
   . (if anchor then renderNewLinesAnchors else id)
   . concatMap (renderToken pref)
 
-insertAnchors' = map f. insertAnchors
-  where f (Left s) = Anchor s
-        f (Right (a, b)) = Token a b
+show' :: Int -> String
+show' = reverse . take 5 . (++ "       ") . reverse . show
+
+addLine :: Int -> String -> String
+addLine n xs = "<span class=\"lineno\">" ++ show' n ++ " </span>" ++ xs
+
+addLines :: String -> String
+addLines = unlines . map (uncurry addLine) . zip [1 :: Int ..] . lines
+
+insertAnchors' :: [(TokenType, String)] -> [Token]
+insertAnchors' = map (either Anchor (uncurry Token)) . insertAnchors
 
 pre :: String -> String
 pre = ("<pre>"++) . (++"</pre>")
@@ -520,7 +417,7 @@ renderToken _ (Coverage Nothing) = closeTick
 renderToken _ (Coverage (Just m)) = openTick m
 renderToken pref (Token t s) = fontify (colourise pref t)
   (if t == Comment then renderComment s else escape s)
-renderToken pref (Anchor s) = "<a name=\"" ++ s ++ "\"></a>"
+renderToken _ (Anchor s) = "<a name=\"" ++ s ++ "\"></a>"
 
 -- Html stuff
 fontify ::  [Highlight] -> String -> String
