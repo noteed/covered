@@ -10,11 +10,9 @@ import Data.List
 import Data.Monoid
 import Language.Haskell.HsColour.Anchors
 import Language.Haskell.HsColour.Classify
-import Language.Haskell.HsColour.Colourise
 import Language.Haskell.HsColour.HTML
 import System.Environment (getArgs)
 import System.IO (localeEncoding)
-import Text.Printf
 import Trace.Hpc.Mix
 import Trace.Hpc.Tix
 import Trace.Hpc.Util
@@ -104,6 +102,7 @@ charEncodingTag =
     "<meta http-equiv=\"Content-Type\" " ++
           "content=\"text/html; " ++ "charset=" ++ show localeEncoding ++ "\">"
 
+helper :: TixModule -> IO (String, String, Mix, Array Int Integer)
 helper tix = do
   let moduleName = tixModuleName tix
       moduleTixs = tixModuleTixs tix
@@ -144,7 +143,7 @@ summary (moduleName, fileName, mix, arr_tix) =
 
   in modSummary `seq` (moduleName, fileName, modSummary)
 
-renderModule anchor number (_, fileName, mix, arr_tix) = do
+renderModule anchor number (moduleName, fileName, mix, arr_tix) = do
   let (Mix origFile _ _ tabStop mix') = mix
       tickedWith n = arr_tix ! n
       isTicked n = tickedWith n /= 0
@@ -175,7 +174,7 @@ renderModule anchor number (_, fileName, mix, arr_tix) = do
   writeFile fileName $
     let f = if anchor then insertAnchors' else map (uncurry Token)
         content' = markup tabStop info $ f $ tokenise content
-    in htmlHeader "TODO" ++ hscolour' defaultColourPrefs anchor number content' ++ htmlClose
+    in htmlHeader moduleName ++ hscolour' number content' ++ htmlClose
 
 data Loc = Loc !Int !Int
          deriving (Eq,Ord,Show)
@@ -263,29 +262,6 @@ sortTicks mix = sortBy
                 | (pos, mark) <- mix
                 , let (ln1, c1, ln2, c2) = fromHpcPos pos
                 ]
-
-openTick :: Markup -> String
-openTick NotTicked       = "<span class=\"nottickedoff\">"
-openTick IsTicked        = "<span class=\"istickedoff\">"
-openTick TickedOnlyTrue  = "<span class=\"tickonlytrue\">"
-openTick TickedOnlyFalse = "<span class=\"tickonlyfalse\">"
-openTick (TopLevelDecl False _) = openTopDecl
-openTick (TopLevelDecl True 0)
-         = "<span class=\"funcount\">-- never entered</span>" ++
-           openTopDecl
-openTick (TopLevelDecl True 1)
-         = "<span class=\"funcount\">-- entered once</span>" ++
-           openTopDecl
-openTick (TopLevelDecl True n0)
-         = "<span class=\"funcount\">-- entered " ++ showBigNum n0 ++ " times</span>" ++ openTopDecl
-  where showBigNum n | n <= 9999 = show n
-                     | otherwise = showBigNum' (n `div` 1000) ++ "," ++ showWith (n `mod` 1000)
-        showBigNum' n | n <= 999 = show n
-                      | otherwise = showBigNum' (n `div` 1000) ++ "," ++ showWith (n `mod` 1000)
-        showWith n = take 3 $ reverse $ ("000" ++) $ reverse $ show n
-
-closeTick :: String
-closeTick = "</span>"
 
 openTick' :: Markup -> Token
 openTick' = Coverage . Just
@@ -379,34 +355,22 @@ instance Monoid ModuleSummary where
           (ModuleSummary eTik2 eTot2 tTik2 tTot2 aTik2 aTot2)
      = ModuleSummary (eTik1 + eTik2) (eTot1 + eTot2) (tTik1 + tTik2) (tTot1 + tTot2) (aTik1 + aTik2) (aTot1 + aTot2)
 
-------------------------------------------------------------------------------
--- global color pallete
-
-red,green,yellow :: String
-red    = "#f20913"
-green  = "#60de51"
-yellow = "yellow"
-
 
 ------------------------------------------------------------------------------
 -- From hscolour, which is under GPL.
 
 -- | Formats Haskell source code using HTML with font tags.
-hscolour' :: ColourPrefs -- ^ Colour preferences.
-         -> Bool         -- ^ Whether to include anchors.
-         -> Bool         -- ^ Whether to number lines.
+hscolour' :: Bool         -- ^ Whether to number lines.
          -> [Token]      -- ^ Haskell source code.
          -> String       -- ^ Coloured Haskell source code.
-hscolour' pref anchor number = pre
+hscolour' number = wrap
+  . unlines . map wrap' . lines
   . (if number then addLines else id)
-  . (if anchor then renderNewLinesAnchors else id)
-  . concatMap (renderToken pref)
-
-show' :: Int -> String
-show' = reverse . take 5 . (++ "       ") . reverse . show
+  . unlines . map (pre . code) . lines
+  . concatMap renderToken
 
 addLine :: Int -> String -> String
-addLine n xs = "<span class=\"lineno\">" ++ show' n ++ " </span>" ++ xs
+addLine n xs = "<span class=\"lineno\" id=\"n" ++ show n ++ "\"><a href=\"#n" ++ show n ++ "\">" ++ show n ++ "</a></span>" ++ xs
 
 addLines :: String -> String
 addLines = unlines . map (uncurry addLine) . zip [1 :: Int ..] . lines
@@ -414,55 +378,82 @@ addLines = unlines . map (uncurry addLine) . zip [1 :: Int ..] . lines
 insertAnchors' :: [(TokenType, String)] -> [Token]
 insertAnchors' = map (either Anchor (uncurry Token)) . insertAnchors
 
+wrap :: String -> String
+wrap = ("<div class=container><div>"++) . (++"</div></div>")
+
+wrap' :: String -> String
+wrap' = ("<div class=code>"++) . (++"</div>")
+
 pre :: String -> String
 pre = ("<pre>"++) . (++"</pre>")
 
-renderToken :: ColourPrefs -> Token -> String
-renderToken _ (Coverage Nothing) = closeTick
-renderToken _ (Coverage (Just m)) = openTick m
-renderToken pref (Token t s) = fontify (colourise pref t)
+code :: String -> String
+code = ("<code>"++) . (++"</code>")
+
+renderToken :: Token -> String
+renderToken (Coverage Nothing) = closeTick
+renderToken (Coverage (Just m)) = openTick m
+renderToken (Token t s) = colourise' t
   (if t == Comment then renderComment s else escape s)
-renderToken _ (Anchor s) = "<a name=\"" ++ s ++ "\"></a>"
+renderToken (Anchor s) = "<a name=\"" ++ s ++ "\"></a>"
 
--- Html stuff
-fontify ::  [Highlight] -> String -> String
-fontify [] s     = s
-fontify (h:hs) s = font h (fontify hs s)
+closeTick :: String
+closeTick = "</span>"
 
-font ::  Highlight -> String -> String
-font Normal         s = s
-font Bold           s = "<b>"++s++"</b>"
-font Dim            s = "<em>"++s++"</em>"
-font Underscore     s = "<u>"++s++"</u>"
-font Blink          s = "<blink>"++s++"</blink>"
-font ReverseVideo   s = s
-font Concealed      s = s
-font (Foreground (Rgb r g b)) s = printf   "<font color=\"#%02x%02x%02x\">%s</font>" r g b s
-font (Background (Rgb r g b)) s = printf "<font bgcolor=\"#%02x%02x%02x\">%s</font>" r g b s
-font (Foreground c) s =   "<font color="++show c++">"++s++"</font>"
-font (Background c) s = "<font bgcolor="++show c++">"++s++"</font>"
-font Italic         s = "<i>"++s++"</i>"
+openTick :: Markup -> String
+openTick NotTicked       = "<span class=\"nottickedoff\">"
+openTick IsTicked        = "<span class=\"istickedoff\">"
+openTick TickedOnlyTrue  = "<span class=\"tickonlytrue\">"
+openTick TickedOnlyFalse = "<span class=\"tickonlyfalse\">"
+openTick (TopLevelDecl False _) = openTopDecl
+openTick (TopLevelDecl True 0)
+         = "<span class=\"funcount\">-- never entered</span>" ++
+           openTopDecl
+openTick (TopLevelDecl True 1)
+         = "<span class=\"funcount\">-- entered once</span>" ++
+           openTopDecl
+openTick (TopLevelDecl True n0)
+         = "<span class=\"funcount\">-- entered " ++ showBigNum n0 ++ " times</span>" ++ openTopDecl
+  where showBigNum n | n <= 9999 = show n
+                     | otherwise = showBigNum' (n `div` 1000) ++ "," ++ showWith (n `mod` 1000)
+        showBigNum' n | n <= 999 = show n
+                      | otherwise = showBigNum' (n `div` 1000) ++ "," ++ showWith (n `mod` 1000)
+        showWith n = take 3 $ reverse $ ("000" ++) $ reverse $ show n
+
+
+colourise' :: TokenType -> String -> String
+colourise' Space    = id
+colourise' Comment  = ("<span class=hs-comment>" ++) . (++ "</span>")
+colourise' Keyword  = \s ->
+  if s == "import"
+  then ("<span class=hs-import>" ++ s ++ "</span>")
+  else ("<span class=hs-keyword>" ++ s ++ "</span>")
+colourise' Keyglyph = ("<span class=hs-keyglyph>" ++) . (++ "</span>")
+colourise' Layout   = ("<span class=hs-layout>" ++) . (++ "</span>")
+colourise' Conid    = ("<span class=hs-conid>" ++) . (++ "</span>")
+colourise' Varid    = ("<span class=hs-varid>" ++) . (++ "</span>")
+colourise' Conop    = ("<span class=hs-conop>" ++) . (++ "</span>")
+colourise' Varop    = ("<span class=hs-varop>" ++) . (++ "</span>")
+colourise' String   = ("<span class=hs-string>" ++) . (++ "</span>")
+colourise' Char     = ("<span class=hs-char>" ++) . (++ "</span>")
+colourise' Number   = ("<span class=hs-numer>" ++) . (++ "</span>")
+colourise' Cpp      = ("<span class=hs-cpp>" ++) . (++ "</span>")
+colourise' Error    = ("<span class=hs-error>" ++) . (++ "</span>")
+colourise' Definition = ("<span class=hs-definition>" ++) . (++ "</span>")
 
 htmlHeader ::  String -> String
 htmlHeader title = unlines
-  [ "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\">"
+  [ "<!DOCTYPE HTML>"
   , "<html>"
   , "<head>"
-  ,"<!-- Generated by HsColour, http://code.haskell.org/~malcolm/hscolour/ -->"
-  , "<title>"++title++"</title>"
-
-  -- hpc-markup style
-  , "<style type=\"text/css\">"
-  , "span.lineno { color: white; background: #aaaaaa; border-right: solid white 12px }"
-  , "span.nottickedoff { background: " ++ yellow ++ "}"
-  , "span.istickedoff { background: white }"
-  , "span.tickonlyfalse { margin: -1px; border: 1px solid " ++ red ++ "; background: " ++ red ++ " }"
-  , "span.tickonlytrue  { margin: -1px; border: 1px solid " ++ green ++ "; background: " ++ green ++ " }"
-  , "span.funcount { font-size: small; color: orange; z-index: 2; position: absolute; right: 20 }"
-  , "span.decl { font-weight: bold }"
-  , "span.spaces    { background: white }"
-  , "</style>"
-
+  , "<meta charset=\"utf-8\">"
+  , "<!-- Generated by Covered, https://github.com/noteed/covered -->"
+  , "<title>" ++ title ++ "</title>"
+  , "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"css/bootstrap.min.css\">"
+  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"css/font-awesome.min.css\">"
+  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"css/style.css\">"
+  , "<link rel=\"stylesheet\" type=\"text/css\" href=\"css/bootstrap-responsive.min.css\">"
   , "</head>"
   , "<body>"
   ]

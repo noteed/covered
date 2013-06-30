@@ -1,0 +1,163 @@
+html {
+  overflow-y: scroll;
+}
+
+body {
+  padding-bottom: 20px;
+  color: #000000;
+}
+
+/* Custom container */
+.container {
+  margin: 0 auto;
+  max-width: 1000px;
+}
+.container > hr {
+  margin: 60px 0;
+}
+
+/* Main marketing message and sign up button */
+.jumbotron {
+  margin: 80px 0;
+  text-align: center;
+}
+.jumbotron h1 {
+  font-size: 100px;
+  line-height: 1;
+}
+.jumbotron .lead {
+  font-size: 24px;
+  line-height: 1.25;
+}
+.jumbotron .btn {
+  font-size: 21px;
+  padding: 14px 24px;
+}
+
+/* Supporting marketing content */
+.marketing {
+  margin: 60px 0;
+}
+.marketing p + h4 {
+  margin-top: 28px;
+}
+
+.form-signin {
+  max-width: 440px;
+  padding: 19px 29px 29px;
+  margin: 0 auto 20px;
+  background-color: #fff;
+  border: 1px solid #e5e5e5;
+  -webkit-border-radius: 5px;
+     -moz-border-radius: 5px;
+          border-radius: 5px;
+}
+.form-signin {
+  margin-top: 45px;
+}
+.form-signin .form-signin-heading,
+.form-signin .checkbox {
+  margin-bottom: 10px;
+}
+.form-signin input[type="text"],
+.form-signin input[type="password"] {
+  font-size: 16px;
+  height: auto;
+  margin-bottom: 15px;
+  padding: 7px 9px;
+}
+.form-signin div {
+  margin-top: 15px;
+  text-align: center;
+}
+
+.form-delete-pattern {
+  margin: 0;
+  padding: 0;
+}
+
+.logs {
+  font-size: 74%;
+  display: none;
+}
+
+.code pre, .code pre code {
+  -webkit-border-radius: 0px;
+  -moz-border-radius: 0px;
+  -o-border-radius: 0px;
+  border-radius: 0px;
+  border: 0px;
+  margin: 0px;
+  padding: 0px;
+  display: inline-block;
+}
+
+.code pre, .code pre code {
+  background-color: #fff;
+}
+
+.code.unhit pre, .code.unhit pre code {
+  background-color: #fcc;
+}
+
+.code span.lineno {
+  width: 5em;
+  display: inline-block;
+  text-align: right;
+  padding-right: 1em;
+  font-size: 90%;
+  margin-left: -6em;
+}
+
+.code span a {
+  color: #999;
+}
+
+.signin-note {
+  margin-top: 10px;
+  font-size: 90%;
+}
+
+h1 sup {
+  font-size: 30%;
+  vertical-align: super;
+}
+h3 sup {
+  font-size: 40%;
+  vertical-align: super;
+}
+
+.blog {
+  width: 800px;
+}
+
+.blog h3 a {
+  color: #000;
+}
+
+.quotes h2 {
+  padding-bottom: 20px;
+}
+.quotes blockquote {
+  padding-bottom: 20px;
+}
+
+/* Covered */
+
+table.bar { background-color: #f25913; }
+td.bar { background-color: #60de51; }
+td.invbar { background-color: #f25913; }
+table.dashboard { border-collapse: collapse ; border: solid 1px black }
+.dashboard td { border: solid 1px black }
+.dashboard th { border: solid 1px black }
+
+span.nottickedoff { border: 2px solid #e5c900 }
+span.tickonlyfalse { border: 2px solid #dc322f }
+span.tickonlytrue  { border: 2px solid #60de51 }
+span.funcount { font-size: small; color: orange; z-index: 2; position: absolute; right: 20 }
+
+.hs-comment { color: #657b83 }
+.hs-import { color: #d33682 }
+.hs-keyword { color: #859900 }
+.hs-varid { color: #268bd2 }
+.hs-string { color: #586e75 }
