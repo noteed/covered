@@ -142,6 +142,25 @@ h3 sup {
   padding-bottom: 20px;
 }
 
+/* Haddock */
+
+hr.hr-hack-top {
+/* The ul inside the masthead are pulled to the right.
+   But if two such masthead are one above the other,
+   the second ul is not completely to the right.
+   Putting a hr between the two masthead solves the
+   problem. I guess a cleaner solution would be obvious
+   to any web developer.
+*/
+  border: 0px;
+  margin: 0px;
+}
+hr.hr-hack-bottom {
+/* Similar to hr-hack-top, but with two stacked footers.
+*/
+  border: 0px;
+}
+
 /* Covered */
 
 table.bar { background-color: #f25913; }
